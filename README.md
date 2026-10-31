@@ -12,7 +12,7 @@ Initial implementation scaffold for the PASS Science Works common assignment.
 - [x] Nodal temperature CSV import
 - [x] Local HTTP API over the C++ importers
 - [x] STL and temperature visualization
-- [ ] Serial/parallel batch benchmark
+- [x] Serial/parallel batch benchmark
 - [ ] Embedded mock adapters
 - [ ] Backpropagation implementation
 - [ ] Windows 11 x64 `Launch.exe` packaging
@@ -114,6 +114,11 @@ Direct dependency versions are pinned in `frontend/package.json`. `frontend/pack
 | GET | `/api/health` | none |
 | POST | `/api/geometry/stl` | `multipart/form-data` field `file` |
 | POST | `/api/thermal/csv` | `multipart/form-data` field `file` |
+| GET | `/api/performance/hardware` | none |
+| POST | `/api/performance/benchmark` | JSON workload configuration |
+| GET | `/api/performance/status` | none |
+| GET | `/api/performance/results` | none |
+| GET | `/api/performance/export` | none |
 
 The upload limit defaults to 64 MiB, matching the importer limits. The client-supplied filename is a display label only. The server stores the bytes under a generated name in a temporary directory and deletes that file before the response is returned.
 
@@ -125,7 +130,15 @@ A successful temperature response contains `filename`, `node_count`, `nodes` (`n
 
 Failures return JSON `{ "error": "..." }` with status 400 for a rejected file, 413 for an oversized upload, and 500 for an unexpected server failure. Parser messages do not include the temporary path.
 
-Geometry and Thermal Analysis are implemented. Performance and Hardware are labelled placeholders for later phases. The point cloud is not registered to the STL.
+Geometry, Thermal Analysis, and Performance are implemented. Hardware remains a labelled placeholder. The point cloud is not registered to the STL.
+
+`POST /api/performance/benchmark` accepts JSON `seed`, `batch_size`, `mesh_size`, `repetitions`, and an optional `worker_counts` array of 1, 2, 3, and 4. It returns 202 and runs the job on a background thread, so `/api/health` and the geometry routes stay available. A second benchmark while one is running returns 409. Invalid workloads return 400. Results and CSV are published only after the job finishes. `GET /api/performance/export` returns `text/csv`.
+
+Run the same benchmark from the command line:
+
+```bash
+./build/workbench benchmark --seed 42 --batch 8 --mesh 128 --repetitions 5 --workers 1,2,3,4 --output benchmark.csv
+```
 
 ## ASCII STL import
 
@@ -217,6 +230,71 @@ Default limits (`TemperatureCsvLimits`):
 
 Numeric text is interpreted in the C locale. The program does not change the process locale.
 
+## Performance benchmark
+
+The Performance Lab solves batches of the existing 1D steady thermal model. It does not replace that model. The governing equation remains `-d/dx(kA dT/dx) = qA`. For constant `k`, `A`, and `q`, the solver uses two-node linear elements, the element stiffness `(kA/h) [[1,-1],[-1,1]]`, the consistent load `(qAh/2)[1,1]^T`, and Dirichlet temperatures at the two ends. Each benchmark case calls `solve_steady_1d`.
+
+### Workload generation
+
+`generate_workload` builds the batch once. Every warm-up and every measured repetition, serial and parallel, receives that same vector of cases.
+
+The generator is `std::mt19937` seeded with the configured `uint32` seed. Each case draws four values, in order: conductivity, volumetric heat generation, left temperature, right temperature. A draw is
+
+```text
+u = mt19937() / 2^32          # [0, 1)
+value = minimum + (maximum - minimum) * u
+```
+
+| Quantity | Range | Units |
+| --- | --- | --- |
+| Conductivity | [0.2, 400) | W/(m·K) |
+| Heat generation | [1, 500000) | W/m³ |
+| Left temperature | [-20, 500) | °C |
+| Right temperature | [-20, 400) | °C |
+
+Length is fixed at 1 m and cross-section area at `1e-4` m², both positive. The mesh size is the element count for every case, from 1 to 320. Batch size is 1 to 256. The same seed, batch size, and mesh size produce the same cases. Conductivity and heat generation are strictly positive. Both boundary values are finite Dirichlet temperatures, which is the boundary-condition set the existing solver accepts.
+
+A request is also rejected when `executions * batch_size * mesh_size^3` exceeds 80,000,000,000. `executions` is `(1 + worker_counts) * (1 + repetitions)`: one excluded warm-up and the measured repetitions, for the serial baseline and every worker count. That limit keeps one request from scheduling a very large dense factorization. On this solver a mesh of a few hundred elements is still a short run, so the cap sits well above the workloads used for measurement.
+
+### Worker pool
+
+Parallel cases run on a fixed pool of `std::thread` workers. The pool size is 1, 2, 3, or 4 and is never larger than the logical CPU count reported for this process. When that count cannot be discovered, the limit is 1. The pool does not create one thread per case.
+
+The control thread owns the pool. Workers wait on a condition variable. The queue mutex is held only while a worker claims the next case index. The thermal solve runs without that mutex. Each case index is handed out once and written into its own pre-sized result slot, so workers do not share a mutable solver or a mutable result element. If a solve throws, the remaining cases still finish, the first exception is rethrown after the batch, and the pool can be reused. The pool destructor sets a stop flag, wakes the workers, and joins them.
+
+Result slot `i` always belongs to generated case `i`. Completion order does not change that.
+
+### Benchmark method
+
+For one benchmark the runner:
+
+1. Generates the workload once and records that duration separately.
+2. Creates each worker pool before that pool is timed. Thread construction stays outside the warm-up and the measured repetitions.
+3. Runs one warm-up of the full batch for every configuration that will be measured: the serial baseline and each worker count (1, 2, 3, and 4, or the requested subset that the machine allows). Every warm-up uses the same generated cases. Those durations are stored separately and are excluded from the repetition lists, the medians, the speedups, and the efficiency.
+4. Runs five measured rounds by default. Each round solves the same batch once on the serial baseline and once on every worker pool. Round 0 uses the order serial, then worker counts ascending. Round `r` is that order rotated left by `r` positions, so the same configuration is not always first. The five raw repetition times are retained for every configuration.
+5. Reports the median of the measured repetitions only. For an odd count the median is the middle sample after sorting. For an even count it is the mean of the two middle samples. The serial median remains the speedup baseline.
+
+Timers use `std::chrono::steady_clock`. A warm-up or repetition timer starts after the pool exists and stops when that batch of solves returns. It does not include workload generation, thread construction, JSON serialization, CSV writing, or frontend rendering. Total benchmark duration includes generation, every warm-up, pool lifetime, and the measured repetitions. The aggregate warm-up time is the sum of the per-configuration warm-ups.
+
+```text
+Speedup(p) = T_serial / T_p
+Efficiency(p) = Speedup(p) / p
+```
+
+`T_serial` and `T_p` are medians of the measured compute times. Warm-up times are not included. `p` is the actual worker count for that configuration. Serial speedup and efficiency are 1 because the first measured serial run is the reference. The program does not replace a measured time that is slower than serial.
+
+A parallel efficiency slightly above 1 (100%) can come from measurement variation. It is most visible with one worker: that pool does almost the same work as the serial baseline, so the two medians can trade places by a small amount. The value is reported as calculated.
+
+Numerical agreement is the maximum absolute nodal temperature difference, in °C, between the first measured serial repetition and every other measured repetition, and between that same serial repetition and each warm-up. Warm-up timings stay excluded either way. The run passes when that difference is at most `1e-8` °C.
+
+### Hardware
+
+The result records the CPU brand string, physical core count, logical CPU count, RAM bytes, OS name from `uname` or the Windows version API, the compiler from the preprocessor, the CMake build type, and the C++ flags for that build type. A field that cannot be read is omitted (JSON `null`, CSV empty) rather than filled with a guessed value. Optimization flags come from `CMAKE_CXX_FLAGS` and `CMAKE_CXX_FLAGS_<CONFIG>` at configure time. A multi-config generator that leaves `CMAKE_BUILD_TYPE` empty reports those flags as unavailable.
+
+### CSV export
+
+`benchmark_result_csv` writes one row per measured repetition. Warm-up solves do not add rows. Columns include the benchmark id, seed, batch size, mesh size, execution mode, worker count, repetition index, that repetition's time, the median, speedup, efficiency, maximum absolute error, validation, generation time, the aggregate warm-up time, that configuration's excluded warm-up time, total duration, and the hardware fields. The header row uses those names. The same table is returned by `GET /api/performance/export`.
+
 ## Known limitations
 
 - Multi-body STL and vertex welding are not implemented. Binary files with extra bytes after the last triangle are rejected.
@@ -226,6 +304,12 @@ Numeric text is interpreted in the C locale. The program does not change the pro
 - The sample temperature field is synthetic. It is not a solution of the heat equation and it is not output from the 1D thermal solver.
 - STL coordinates have whatever unit the author used. Only the sample block is defined to be in metres.
 - Degenerate triangles are preserved. The importer checks structure and finite coordinates; it does not check watertightness or normal consistency.
+- Benchmark parallelism is across independent cases. One factorization still runs on one worker. Dense elimination is O(n³) in time and O(n²) in memory, so mesh size and schedule cost are capped.
+- Only one benchmark job is kept, in process memory. There is no cancellation and no history of earlier jobs.
+- Each measured configuration, including every worker count, is warmed up once. Those times are excluded from the medians. A small efficiency above 100% can still appear from timing variation, particularly for one worker.
+- A small batch can be slower in parallel than in serial. The measured speedup is reported as calculated, including values below 1.
+- Logical CPU count, physical cores, RAM, or the CPU model can be unavailable in restricted environments. The worker limit is then 1 when the logical count is unknown.
+- The worker pool never uses more than four threads, even when the machine has more logical CPUs.
 
 ## Engineering notes
 The governing equation is `-d/dx(kA dT/dx) = qA`. For a linear two-node element of length `h`, the element stiffness is

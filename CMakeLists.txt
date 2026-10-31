@@ -13,12 +13,37 @@ if(CMAKE_VERSION VERSION_GREATER_EQUAL "4.0")
         "Policy floor for FetchContent dependencies" FORCE)
 endif()
 
+find_package(Threads REQUIRED)
+
+set(WORKBENCH_BUILD_TYPE_VALUE "unavailable")
+set(WORKBENCH_OPT_FLAGS_VALUE "")
+if(CMAKE_BUILD_TYPE)
+    set(WORKBENCH_BUILD_TYPE_VALUE "${CMAKE_BUILD_TYPE}")
+    string(TOUPPER "${CMAKE_BUILD_TYPE}" WORKBENCH_BUILD_TYPE_UPPER)
+    set(WORKBENCH_OPT_FLAGS_VALUE "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${WORKBENCH_BUILD_TYPE_UPPER}}")
+    string(STRIP "${WORKBENCH_OPT_FLAGS_VALUE}" WORKBENCH_OPT_FLAGS_VALUE)
+endif()
+string(REPLACE "\\" "/" WORKBENCH_OPT_FLAGS_VALUE "${WORKBENCH_OPT_FLAGS_VALUE}")
+string(REPLACE "\"" "'" WORKBENCH_OPT_FLAGS_VALUE "${WORKBENCH_OPT_FLAGS_VALUE}")
+set(WORKBENCH_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
+file(MAKE_DIRECTORY "${WORKBENCH_GENERATED_DIR}")
+configure_file(
+    "${CMAKE_SOURCE_DIR}/cmake/workbench_build_info.hpp.in"
+    "${WORKBENCH_GENERATED_DIR}/workbench_build_info.hpp"
+    @ONLY
+)
+
 add_library(workbench_core
     src/core/thermal/thermal_solver.cpp
     src/core/geometry/stl_parser.cpp
     src/core/thermal/temperature_csv_parser.cpp
+    src/core/performance/workload_generator.cpp
+    src/core/performance/worker_pool.cpp
+    src/core/performance/hardware_info.cpp
+    src/core/performance/benchmark_runner.cpp
 )
-target_include_directories(workbench_core PUBLIC include)
+target_include_directories(workbench_core PUBLIC include "${WORKBENCH_GENERATED_DIR}")
+target_link_libraries(workbench_core PUBLIC Threads::Threads)
 
 add_executable(workbench src/app/main.cpp)
 target_link_libraries(workbench PRIVATE workbench_core)
@@ -43,6 +68,10 @@ target_compile_definitions(workbench_temperature_tests PRIVATE
     WORKBENCH_TEST_DIR="${CMAKE_BINARY_DIR}/tmp_tests")
 add_test(NAME temperature_csv_tests COMMAND workbench_temperature_tests)
 
+add_executable(workbench_performance_tests tests/test_performance.cpp)
+target_link_libraries(workbench_performance_tests PRIVATE workbench_core)
+add_test(NAME performance_tests COMMAND workbench_performance_tests)
+
 add_test(NAME thermal_cli
     COMMAND workbench 4 ${CMAKE_BINARY_DIR}/thermal_cli_smoke.csv)
 set_tests_properties(thermal_cli PROPERTIES
@@ -57,6 +86,11 @@ add_test(NAME inspect_sample_temperature
     COMMAND workbench inspect-temperature ${CMAKE_SOURCE_DIR}/data/thermal/sample_temperature.csv)
 set_tests_properties(inspect_sample_temperature PROPERTIES
     PASS_REGULAR_EXPRESSION "Nodes: 27[^0-9]")
+
+add_test(NAME benchmark_cli
+    COMMAND workbench benchmark --seed 1 --batch 2 --mesh 4 --repetitions 1 --workers 1)
+set_tests_properties(benchmark_cli PROPERTIES
+    PASS_REGULAR_EXPRESSION "Numerical validation: passed")
 
 # Local HTTP API. The CLI executable above is unchanged.
 # cpp-httplib v0.18.3 and nlohmann/json v3.11.3 are fetched on the first configure.
@@ -87,7 +121,10 @@ if(WORKBENCH_BUILD_SERVER)
 
     find_package(Threads REQUIRED)
 
-    add_library(workbench_server_lib src/server/api_server.cpp)
+    add_library(workbench_server_lib
+        src/server/api_server.cpp
+        src/server/performance_api.cpp
+    )
     target_include_directories(workbench_server_lib PUBLIC include)
     target_compile_definitions(workbench_server_lib
         PUBLIC "WORKBENCH_VERSION=\"${PROJECT_VERSION}\"")
@@ -108,15 +145,23 @@ if(WORKBENCH_BUILD_SERVER)
         WORKBENCH_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
         WORKBENCH_TEST_DIR="${CMAKE_BINARY_DIR}/tmp_tests")
     add_test(NAME http_api_tests COMMAND workbench_api_tests)
+
+    add_executable(workbench_performance_api_tests tests/test_performance_api.cpp)
+    target_link_libraries(workbench_performance_api_tests PRIVATE workbench_server_lib)
+    target_compile_definitions(workbench_performance_api_tests PRIVATE
+        WORKBENCH_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+        WORKBENCH_TEST_DIR="${CMAKE_BINARY_DIR}/tmp_tests")
+    add_test(NAME performance_api_tests COMMAND workbench_performance_api_tests)
 endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     foreach(target workbench_core workbench workbench_tests
-            workbench_geometry_tests workbench_temperature_tests)
+            workbench_geometry_tests workbench_temperature_tests workbench_performance_tests)
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
     endforeach()
     if(TARGET workbench_server_lib)
-        foreach(target workbench_server_lib workbench_server workbench_api_tests)
+        foreach(target workbench_server_lib workbench_server workbench_api_tests
+                workbench_performance_api_tests)
             target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
         endforeach()
     endif()

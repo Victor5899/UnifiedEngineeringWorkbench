@@ -155,7 +155,9 @@ int main(int argc, char** argv) {
 
         std::cout << "Unified Engineering Workbench API\n"
                   << "Listening on http://" << options.host << ':' << options.port << '\n'
-                  << "Health: http://" << options.host << ':' << options.port << "/api/health\n";
+                  << "Health: http://" << options.host << ':' << options.port << "/api/health\n"
+                  << "Performance: http://" << options.host << ':' << options.port
+                  << "/api/performance/hardware\n";
         if (!options.static_directory.empty()) {
             std::cout << "Static frontend: " << options.static_directory.string() << '\n';
         }

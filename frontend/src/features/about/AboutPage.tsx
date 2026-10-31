@@ -26,7 +26,8 @@ export function AboutPage({
         <h2 className="mt-2 text-2xl font-semibold text-mist-100">Unified Engineering Workbench</h2>
         <p className="mt-3 max-w-2xl text-sm leading-6 text-mist-300">
           Geometry and temperature files are parsed by the C++17 engines. This interface uploads the file and
-          draws the JSON result. It does not reimplement the STL or CSV parsers.
+          draws the JSON result. It does not reimplement the STL or CSV parsers. The Performance page runs
+          serial and parallel batches of the same 1D thermal solver on the C++ backend.
         </p>
         <div className="mt-6 grid max-w-3xl gap-3 md:grid-cols-2">
           <article className="rounded-md border border-ink-600 bg-ink-900 p-4">

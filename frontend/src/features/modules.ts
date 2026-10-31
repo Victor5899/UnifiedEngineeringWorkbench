@@ -27,9 +27,9 @@ export const modules: readonly ModuleDefinition[] = [
   {
     id: "performance",
     label: "Performance",
-    description: "Planned batch benchmarks",
+    description: "Serial and parallel benchmarks",
     icon: Gauge,
-    implemented: false,
+    implemented: true,
   },
   {
     id: "hardware",
