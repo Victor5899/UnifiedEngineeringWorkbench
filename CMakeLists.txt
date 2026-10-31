@@ -41,6 +41,11 @@ add_library(workbench_core
     src/core/performance/worker_pool.cpp
     src/core/performance/hardware_info.cpp
     src/core/performance/benchmark_runner.cpp
+    src/core/hardware/device_types.cpp
+    src/core/hardware/mock_mcu_adapter.cpp
+    src/core/hardware/mock_fpga_adapter.cpp
+    src/core/hardware/mock_jtag_adapter.cpp
+    src/core/hardware/device_manager.cpp
 )
 target_include_directories(workbench_core PUBLIC include "${WORKBENCH_GENERATED_DIR}")
 target_link_libraries(workbench_core PUBLIC Threads::Threads)
@@ -68,9 +73,13 @@ target_compile_definitions(workbench_temperature_tests PRIVATE
     WORKBENCH_TEST_DIR="${CMAKE_BINARY_DIR}/tmp_tests")
 add_test(NAME temperature_csv_tests COMMAND workbench_temperature_tests)
 
-add_executable(workbench_performance_tests tests/test_performance.cpp)
+    add_executable(workbench_performance_tests tests/test_performance.cpp)
 target_link_libraries(workbench_performance_tests PRIVATE workbench_core)
 add_test(NAME performance_tests COMMAND workbench_performance_tests)
+
+add_executable(workbench_hardware_tests tests/test_hardware.cpp)
+target_link_libraries(workbench_hardware_tests PRIVATE workbench_core)
+add_test(NAME hardware_tests COMMAND workbench_hardware_tests)
 
 add_test(NAME thermal_cli
     COMMAND workbench 4 ${CMAKE_BINARY_DIR}/thermal_cli_smoke.csv)
@@ -124,6 +133,7 @@ if(WORKBENCH_BUILD_SERVER)
     add_library(workbench_server_lib
         src/server/api_server.cpp
         src/server/performance_api.cpp
+        src/server/hardware_api.cpp
     )
     target_include_directories(workbench_server_lib PUBLIC include)
     target_compile_definitions(workbench_server_lib
@@ -152,16 +162,21 @@ if(WORKBENCH_BUILD_SERVER)
         WORKBENCH_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
         WORKBENCH_TEST_DIR="${CMAKE_BINARY_DIR}/tmp_tests")
     add_test(NAME performance_api_tests COMMAND workbench_performance_api_tests)
+
+    add_executable(workbench_hardware_api_tests tests/test_hardware_api.cpp)
+    target_link_libraries(workbench_hardware_api_tests PRIVATE workbench_server_lib)
+    add_test(NAME hardware_api_tests COMMAND workbench_hardware_api_tests)
 endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     foreach(target workbench_core workbench workbench_tests
-            workbench_geometry_tests workbench_temperature_tests workbench_performance_tests)
+            workbench_geometry_tests workbench_temperature_tests workbench_performance_tests
+            workbench_hardware_tests)
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
     endforeach()
     if(TARGET workbench_server_lib)
         foreach(target workbench_server_lib workbench_server workbench_api_tests
-                workbench_performance_api_tests)
+                workbench_performance_api_tests workbench_hardware_api_tests)
             target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
         endforeach()
     endif()

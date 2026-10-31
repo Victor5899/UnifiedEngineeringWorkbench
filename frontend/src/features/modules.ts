@@ -34,9 +34,9 @@ export const modules: readonly ModuleDefinition[] = [
   {
     id: "hardware",
     label: "Hardware",
-    description: "Planned device adapters",
+    description: "Simulated device adapters",
     icon: Cpu,
-    implemented: false,
+    implemented: true,
   },
   {
     id: "about",

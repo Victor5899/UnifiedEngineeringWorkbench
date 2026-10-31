@@ -1,5 +1,13 @@
 import type { GeometryModel, HealthResponse, TemperatureModel } from "../types/api";
 import type {
+  CapabilityList,
+  EmbeddedDevice,
+  EmbeddedDeviceList,
+  HardwareCommandResult,
+  SimulatedFailureArmed,
+  TelemetryReport,
+} from "../types/hardware";
+import type {
   BenchmarkAccepted,
   BenchmarkRequest,
   BenchmarkResult,
@@ -259,6 +267,116 @@ export function startBenchmark(request: BenchmarkRequest): Promise<BenchmarkAcce
     },
     isBenchmarkAccepted,
   );
+}
+
+function isDeviceType(value: unknown): value is EmbeddedDevice["device_type"] {
+  return value === "microcontroller" || value === "fpga" || value === "jtag_adapter";
+}
+
+function isConnectionState(value: unknown): value is EmbeddedDevice["connection_state"] {
+  return value === "connected" || value === "disconnected";
+}
+
+function isCapability(value: unknown): value is EmbeddedDevice["capabilities"][number] {
+  return isRecord(value) && typeof value.id === "string" && value.id.trim().length > 0 && typeof value.summary === "string";
+}
+
+function isSimulatedEnvelope(value: Record<string, unknown>): boolean {
+  return value.simulated === true && value.physical_hardware_connected === false;
+}
+
+function isEmbeddedDevice(value: unknown): value is EmbeddedDevice {
+  if (!isRecord(value) || !isSimulatedEnvelope(value)) return false;
+  if (typeof value.id !== "string" || typeof value.display_name !== "string") return false;
+  if (typeof value.reference_profile !== "string" || typeof value.manufacturer_reference !== "string") return false;
+  if (!isDeviceType(value.device_type) || !isConnectionState(value.connection_state)) return false;
+  if (typeof value.available !== "boolean" || !Array.isArray(value.capabilities)) return false;
+  return value.capabilities.every(isCapability);
+}
+
+function isEmbeddedDeviceList(value: unknown): value is EmbeddedDeviceList {
+  return isRecord(value) && isSimulatedEnvelope(value) && Array.isArray(value.devices) && value.devices.every(isEmbeddedDevice);
+}
+
+function isCapabilityList(value: unknown): value is CapabilityList {
+  if (!isRecord(value) || !isSimulatedEnvelope(value) || !Array.isArray(value.devices)) return false;
+  return value.devices.every((device) => {
+    if (!isRecord(device) || typeof device.id !== "string" || typeof device.display_name !== "string") return false;
+    if (!isDeviceType(device.device_type) || !Array.isArray(device.capabilities)) return false;
+    return device.capabilities.every(isCapability);
+  });
+}
+
+function isHardwareCommand(value: unknown): value is HardwareCommandResult {
+  return (
+    isRecord(value) &&
+    isSimulatedEnvelope(value) &&
+    typeof value.device_id === "string" &&
+    isConnectionState(value.connection_state) &&
+    typeof value.message === "string"
+  );
+}
+
+function isTelemetryReport(value: unknown): value is TelemetryReport {
+  if (!isRecord(value) || !isSimulatedEnvelope(value)) return false;
+  if (typeof value.device_id !== "string" || typeof value.notice !== "string" || !Array.isArray(value.readings)) return false;
+  return value.readings.every(
+    (reading) =>
+      isRecord(reading) &&
+      typeof reading.name === "string" &&
+      typeof reading.value === "string" &&
+      typeof reading.unit === "string" &&
+      reading.simulated === true,
+  );
+}
+
+function isFailureArmed(value: unknown): value is SimulatedFailureArmed {
+  return (
+    isRecord(value) &&
+    isSimulatedEnvelope(value) &&
+    typeof value.device_id === "string" &&
+    typeof value.failure === "string" &&
+    value.armed === true &&
+    isConnectionState(value.connection_state) &&
+    typeof value.message === "string"
+  );
+}
+
+function postJson<T>(path: string, body: unknown, accept: (value: unknown) => value is T): Promise<T> {
+  return requestJson(
+    path,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body),
+    },
+    accept,
+  );
+}
+
+export function fetchEmbeddedDevices(): Promise<EmbeddedDeviceList> {
+  return requestJson("/api/hardware/devices", undefined, isEmbeddedDeviceList);
+}
+
+export function fetchEmbeddedCapabilities(): Promise<CapabilityList> {
+  return requestJson("/api/hardware/capabilities", undefined, isCapabilityList);
+}
+
+export function connectEmbeddedDevice(deviceId: string): Promise<HardwareCommandResult> {
+  return postJson("/api/hardware/connect", { device_id: deviceId }, isHardwareCommand);
+}
+
+export function disconnectEmbeddedDevice(deviceId: string): Promise<HardwareCommandResult> {
+  return postJson("/api/hardware/disconnect", { device_id: deviceId }, isHardwareCommand);
+}
+
+export function fetchEmbeddedTelemetry(deviceId: string): Promise<TelemetryReport> {
+  const query = new URLSearchParams({ device_id: deviceId });
+  return requestJson(`/api/hardware/telemetry?${query.toString()}`, undefined, isTelemetryReport);
+}
+
+export function armSimulatedHardwareFailure(deviceId: string, failure: string): Promise<SimulatedFailureArmed> {
+  return postJson("/api/hardware/simulate-failure", { device_id: deviceId, failure }, isFailureArmed);
 }
 
 export async function downloadBenchmarkCsv(): Promise<{ filename: string; csv: string }> {

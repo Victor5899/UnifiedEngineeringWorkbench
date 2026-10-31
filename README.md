@@ -13,7 +13,7 @@ Initial implementation scaffold for the PASS Science Works common assignment.
 - [x] Local HTTP API over the C++ importers
 - [x] STL and temperature visualization
 - [x] Serial/parallel batch benchmark
-- [ ] Embedded mock adapters
+- [x] Embedded mock adapters
 - [ ] Backpropagation implementation
 - [ ] Windows 11 x64 `Launch.exe` packaging
 
@@ -119,6 +119,13 @@ Direct dependency versions are pinned in `frontend/package.json`. `frontend/pack
 | GET | `/api/performance/status` | none |
 | GET | `/api/performance/results` | none |
 | GET | `/api/performance/export` | none |
+| GET | `/api/hardware/devices` | none |
+| GET | `/api/hardware/devices/{id}` | none |
+| GET | `/api/hardware/capabilities` | none |
+| POST | `/api/hardware/connect` | JSON `device_id` |
+| POST | `/api/hardware/disconnect` | JSON `device_id` |
+| GET | `/api/hardware/telemetry` | query `device_id` |
+| POST | `/api/hardware/simulate-failure` | JSON `device_id` and `failure` |
 
 The upload limit defaults to 64 MiB, matching the importer limits. The client-supplied filename is a display label only. The server stores the bytes under a generated name in a temporary directory and deletes that file before the response is returned.
 
@@ -130,7 +137,11 @@ A successful temperature response contains `filename`, `node_count`, `nodes` (`n
 
 Failures return JSON `{ "error": "..." }` with status 400 for a rejected file, 413 for an oversized upload, and 500 for an unexpected server failure. Parser messages do not include the temporary path.
 
-Geometry, Thermal Analysis, and Performance are implemented. Hardware remains a labelled placeholder. The point cloud is not registered to the STL.
+Geometry, Thermal Analysis, Performance, and the simulated Hardware adapters are implemented. The point cloud is not registered to the STL.
+
+The hardware routes call in-process mock adapters for an Arduino Uno Rev3-class microcontroller, a Digilent Arty A7-100-class FPGA board, and a Digilent JTAG-HS2-class debug adapter. Responses set `simulated` to true and `physical_hardware_connected` to false. No USB, serial, or JTAG port is opened. The electrical design, the voltage domains, and the statement of what was not physically tested are in `docs/embedded_integration.md`.
+
+`POST /api/hardware/connect` and `POST /api/hardware/disconnect` take `{ "device_id": "..." }`. Unknown ids return 404. A duplicate connect or a disconnect of an already disconnected device returns 409. `GET /api/hardware/telemetry?device_id=...` returns 409 until that device is connected. `POST /api/hardware/simulate-failure` with `{ "device_id": "jtag-hs2", "failure": "connection_timeout" }` arms one deterministic JTAG timeout. The next connect returns 504, leaves the adapter disconnected, and does not change the other devices. The connect after that can succeed. Other device types reject that failure with 400. Invalid JSON returns 400 with `{ "error": "..." }`.
 
 `POST /api/performance/benchmark` accepts JSON `seed`, `batch_size`, `mesh_size`, `repetitions`, and an optional `worker_counts` array of 1, 2, 3, and 4. It returns 202 and runs the job on a background thread, so `/api/health` and the geometry routes stay available. A second benchmark while one is running returns 409. Invalid workloads return 400. Results and CSV are published only after the job finishes. `GET /api/performance/export` returns `text/csv`.
 
@@ -310,6 +321,7 @@ The result records the CPU brand string, physical core count, logical CPU count,
 - A small batch can be slower in parallel than in serial. The measured speedup is reported as calculated, including values below 1.
 - Logical CPU count, physical cores, RAM, or the CPU model can be unavailable in restricted environments. The worker limit is then 1 when the logical count is unknown.
 - The worker pool never uses more than four threads, even when the machine has more logical CPUs.
+- Hardware adapters are simulated. They do not detect USB devices, program an FPGA, or drive a JTAG scan. Telemetry values are labelled constants, not measurements. See `docs/embedded_integration.md`.
 
 ## Engineering notes
 The governing equation is `-d/dx(kA dT/dx) = qA`. For a linear two-node element of length `h`, the element stiffness is
