@@ -1,6 +1,9 @@
 build/
 .DS_Store
-*.csv
+tmp_tests/
+# Generated solver output. Sample tables under data/ stay tracked.
+/*.csv
+/results/*.csv
 *.exe
 *.dll
 *.pdb
