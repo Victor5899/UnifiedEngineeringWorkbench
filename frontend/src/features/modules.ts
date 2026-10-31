@@ -13,7 +13,7 @@ export const modules: readonly ModuleDefinition[] = [
   {
     id: "geometry",
     label: "Geometry",
-    description: "ASCII STL viewer",
+    description: "STL viewer",
     icon: Box,
     implemented: true,
   },

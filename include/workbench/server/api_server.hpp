@@ -10,7 +10,7 @@
 
 namespace workbench {
 
-// Local HTTP adapter. Parsing remains in parse_ascii_stl and parse_temperature_csv.
+// Local HTTP adapter. Parsing remains in parse_stl and parse_temperature_csv.
 // Uploaded files are written under generated names and removed before the handler returns.
 struct ApiServerConfig {
     std::uintmax_t max_upload_bytes = 64ull * 1024ull * 1024ull;

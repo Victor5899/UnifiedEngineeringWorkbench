@@ -9,7 +9,7 @@ import { usePublishWorkspace } from "../../hooks/useWorkspace";
 import { formatNumber, formatVec3 } from "../../lib/format";
 import { ApiError, uploadStl } from "../../services/api";
 import type { GeometryModel } from "../../types/api";
-import { GeometryMesh } from "./GeometryMesh";
+import { edgeOverlayTriangleLimit, GeometryMesh } from "./GeometryMesh";
 
 export function GeometryPage({ active }: { active: boolean }) {
   const [model, setModel] = useState<GeometryModel | null>(null);
@@ -69,8 +69,8 @@ export function GeometryPage({ active }: { active: boolean }) {
         />
         {!model && !loading ? (
           <EmptyState
-            title="Import an ASCII STL"
-            detail="The file is parsed by the C++ geometry engine. Triangle coordinates are displayed in the file's own units."
+            title="Import an STL"
+            detail="ASCII and binary STL are parsed by the C++ geometry engine. Triangle coordinates are displayed in the file's own units."
             action={
               <button type="button" className="btn btn-primary" onClick={picker.open}>
                 <Upload size={15} />
@@ -109,7 +109,10 @@ function GeometryInspector({ model }: { model: GeometryModel | null }) {
             <Field label="Z" value={formatNumber(model.dimensions.z)} />
           </InspectorSection>
           <Note>
-            ASCII STL does not store a unit. These coordinates are file units. The sample block was authored in metres.
+            STL does not store a unit. These coordinates are file units. The sample block was authored in metres.
+            {model.triangle_count > edgeOverlayTriangleLimit
+              ? " Edge lines are omitted above 100,000 triangles so the shaded surface stays responsive."
+              : ""}
           </Note>
         </>
       ) : (

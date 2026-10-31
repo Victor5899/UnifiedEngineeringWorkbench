@@ -8,7 +8,7 @@ Initial implementation scaffold for the PASS Science Works common assignment.
 - [x] Analytical solution and element-midpoint error
 - [x] CSV export
 - [x] Initial positive/negative/convergence tests
-- [x] ASCII STL import
+- [x] ASCII and binary STL import
 - [x] Nodal temperature CSV import
 - [x] Local HTTP API over the C++ importers
 - [x] STL and temperature visualization
@@ -117,6 +117,8 @@ Direct dependency versions are pinned in `frontend/package.json`. `frontend/pack
 
 The upload limit defaults to 64 MiB, matching the importer limits. The client-supplied filename is a display label only. The server stores the bytes under a generated name in a temporary directory and deletes that file before the response is returned.
 
+A binary STL is much smaller than the JSON triangle list. Geometry responses are written as one string, without a JSON object tree. A mesh whose JSON would exceed 384 MiB (about 899,000 triangles at the budgeted size) is rejected with HTTP 413 after parsing. A 25 MiB binary file is about 525,000 triangles and stays inside that budget. The 64 MiB upload limit was not raised.
+
 A successful STL response contains `filename`, `solid_name`, `triangle_count`, `vertex_count`, `triangles` (`normal` and `vertices` as `[x, y, z]`), `bounding_box.min`, `bounding_box.max`, `dimensions`, and `coordinate_units` (`file`).
 
 A successful temperature response contains `filename`, `node_count`, `nodes` (`node_id`, `x_m`, `y_m`, `z_m`, `temperature_C`), `minimum_temperature_C`, `maximum_temperature_C`, `average_temperature_C`, `bounding_box`, `dimensions`, `coordinate_units` (`m`), and `temperature_units` (`C`).
@@ -154,17 +156,27 @@ Validation:
 - A solid with no facets is rejected.
 - A missing or unexpected keyword, the wrong number of vertices, or a non-numeric token is rejected with the file path and line number.
 - NaN and infinity are rejected in normals and vertex coordinates.
-- Binary STL is rejected, including a binary file whose 80-byte header begins with `solid`.
-- Text that does not start with `solid` is rejected.
+- Text that does not start with `solid` is rejected by the ASCII parser.
 - Only one solid is accepted. Tokens after the `endsolid` line are rejected.
 - A non-regular path or a missing file is rejected.
+- `parse_ascii_stl` still rejects binary input. `parse_stl` and the HTTP API accept both.
 
 Default limits (`StlImportLimits`):
 
 - Maximum file size: 64 MiB (67,108,864 bytes).
 - Maximum triangle count: 2,000,000.
 
-Both limits are arguments of `parse_ascii_stl`. A limit of zero is rejected before the file is read.
+Both limits are arguments of `parse_ascii_stl` and `parse_stl`. A limit of zero is rejected before the file is read.
+
+### Binary STL
+
+`parse_stl` selects the encoding before reading triangles:
+
+- A file whose length is exactly `84 + triangle_count * 50` is binary. This includes an 80-byte header that begins with the letters `solid`.
+- If that same length belongs to ASCII text that starts with `solid` and contains `facet` or `endsolid`, it stays on the ASCII parser.
+- Anything else with non-text bytes is diagnosed as binary, so a truncated or over-long file reports a size error instead of an ASCII syntax error.
+
+Each record is a little-endian normal, three vertices, and a 2-byte attribute count. The attribute is ignored. The header's printable text, with a leading `solid` keyword removed, becomes `solid_name`. Coordinates must be finite. A count of zero, a truncated file, and a file whose length does not match the declared count are rejected. The bounding box uses vertices only, and the vertex count is three times the triangle count. Vertices are not welded.
 
 ## Temperature CSV import
 
@@ -207,7 +219,8 @@ Numeric text is interpreted in the C locale. The program does not change the pro
 
 ## Known limitations
 
-- Binary STL, multi-body STL, and vertex welding are not implemented.
+- Multi-body STL and vertex welding are not implemented. Binary files with extra bytes after the last triangle are rejected.
+- Very large meshes still allocate the file, one triangle record per facet, and one JSON response. The browser parses that JSON on the main thread. Edge lines are drawn only for meshes of 100,000 triangles or fewer.
 - There is no mesh-to-result registration. The viewers draw the STL and the temperature table separately.
 - The temperature table is a simplified nodal CSV, not a full ANSYS result database.
 - The sample temperature field is synthetic. It is not a solution of the heat equation and it is not output from the 1D thermal solver.

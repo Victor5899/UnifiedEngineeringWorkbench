@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <filesystem>
 #include <limits>
@@ -426,12 +428,153 @@ StlMesh parse_ascii_bytes(const std::string& bytes,
     return mesh;
 }
 
+std::uint32_t read_le_u32(const unsigned char* raw) {
+    return static_cast<std::uint32_t>(raw[0]) |
+           (static_cast<std::uint32_t>(raw[1]) << 8) |
+           (static_cast<std::uint32_t>(raw[2]) << 16) |
+           (static_cast<std::uint32_t>(raw[3]) << 24);
+}
+
+float read_le_f32(const unsigned char* raw) {
+    const std::uint32_t bits = read_le_u32(raw);
+    float value = 0.0f;
+    static_assert(sizeof(float) == sizeof(bits), "binary STL requires a 32-bit float");
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+bool read_finite_vec3(const unsigned char* raw, Vec3& point) {
+    const float x = read_le_f32(raw);
+    const float y = read_le_f32(raw + 4);
+    const float z = read_le_f32(raw + 8);
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) return false;
+    point.x = static_cast<double>(x);
+    point.y = static_cast<double>(y);
+    point.z = static_cast<double>(z);
+    return true;
+}
+
+std::string binary_solid_name(const std::string& bytes) {
+    std::string text;
+    const std::size_t header = std::min<std::size_t>(bytes.size(), 80);
+    text.reserve(header);
+    for (std::size_t i = 0; i < header; ++i) {
+        const unsigned char c = static_cast<unsigned char>(bytes[i]);
+        if (c == 0) break;
+        if (c >= 32 && c <= 126) text.push_back(static_cast<char>(c));
+    }
+    text = trim_copy(text);
+    if (starts_with_keyword(text, 0, "solid")) {
+        text = trim_copy(text.substr(std::string("solid").size()));
+    }
+    return text;
+}
+
+bool header_starts_with_solid(const std::string& bytes) {
+    std::size_t index = skip_bom(bytes);
+    while (index < bytes.size() && is_whitespace(bytes[index])) ++index;
+    return starts_with_keyword(bytes, index, "solid");
+}
+
+bool is_ascii_stl_text(const std::string& bytes) {
+    if (!header_starts_with_solid(bytes) || contains_non_text(bytes)) return false;
+    return bytes.find("facet") != std::string::npos || bytes.find("endsolid") != std::string::npos;
+}
+
+StlMesh parse_binary_bytes(const std::string& bytes,
+                           const std::string& path,
+                           const StlImportLimits& limits) {
+    constexpr std::uint64_t kHeaderBytes = 84;
+    constexpr std::uint64_t kRecordBytes = 50;
+    if (bytes.size() < kHeaderBytes) {
+        throw StlParseError(file_error(
+            path,
+            "binary STL is truncated. The header and triangle count need 84 bytes; this file has " +
+                std::to_string(bytes.size()) + " bytes."));
+    }
+
+    const auto* raw = reinterpret_cast<const unsigned char*>(bytes.data());
+    const std::uint32_t count = read_le_u32(raw + 80);
+    if (static_cast<std::uint64_t>(count) >
+        (std::numeric_limits<std::uint64_t>::max() - kHeaderBytes) / kRecordBytes) {
+        throw StlParseError(file_error(
+            path, "binary STL triangle count does not fit in the file-size calculation."));
+    }
+    const std::uint64_t expected = kHeaderBytes + kRecordBytes * static_cast<std::uint64_t>(count);
+    if (static_cast<std::uint64_t>(bytes.size()) != expected) {
+        if (static_cast<std::uint64_t>(bytes.size()) < expected) {
+            throw StlParseError(file_error(
+                path,
+                "binary STL is truncated. The header declares " + std::to_string(count) +
+                    " triangles (" + std::to_string(expected) + " bytes) but the file is " +
+                    std::to_string(bytes.size()) + " bytes."));
+        }
+        throw StlParseError(file_error(
+            path,
+            "binary STL size does not match its triangle count. " + std::to_string(count) +
+                " triangles require " + std::to_string(expected) + " bytes, but the file is " +
+                std::to_string(bytes.size()) + " bytes."));
+    }
+    if (count == 0) {
+        throw StlParseError(file_error(path, "binary STL contains no triangles."));
+    }
+    if (static_cast<std::size_t>(count) > limits.max_triangles) {
+        throw StlParseError(file_error(
+            path,
+            "triangle count " + std::to_string(count) + " exceeds the limit of " +
+                std::to_string(limits.max_triangles) +
+                ". Increase StlImportLimits::max_triangles for a trusted file."));
+    }
+
+    StlMesh mesh;
+    mesh.solid_name = binary_solid_name(bytes);
+    mesh.triangles.resize(count);
+    bool bounds_ready = false;
+    for (std::uint32_t index = 0; index < count; ++index) {
+        const unsigned char* record = raw + kHeaderBytes + static_cast<std::uint64_t>(index) * kRecordBytes;
+        Triangle& triangle = mesh.triangles[index];
+        if (!read_finite_vec3(record, triangle.normal) ||
+            !read_finite_vec3(record + 12, triangle.vertices[0]) ||
+            !read_finite_vec3(record + 24, triangle.vertices[1]) ||
+            !read_finite_vec3(record + 36, triangle.vertices[2])) {
+            throw StlParseError(file_error(
+                path,
+                "triangle " + std::to_string(index + 1) +
+                    " contains a non-finite normal or vertex coordinate. NaN and infinity are rejected."));
+        }
+        include_vertex(mesh.bounds, bounds_ready, triangle.vertices[0]);
+        include_vertex(mesh.bounds, bounds_ready, triangle.vertices[1]);
+        include_vertex(mesh.bounds, bounds_ready, triangle.vertices[2]);
+    }
+    return mesh;
+}
+
+StlMesh parse_stl_bytes(const std::string& bytes,
+                        const std::string& path,
+                        const StlImportLimits& limits) {
+    const bool ascii_text = is_ascii_stl_text(bytes);
+    // Size wins over a "solid" header unless the entire file is ASCII facet text.
+    if (matches_binary_stl_size(bytes) && !ascii_text) {
+        return parse_binary_bytes(bytes, path, limits);
+    }
+    if (!ascii_text && contains_non_text(bytes)) {
+        return parse_binary_bytes(bytes, path, limits);
+    }
+    return parse_ascii_bytes(bytes, path, limits);
+}
+
 }  // namespace
 
 StlMesh parse_ascii_stl(const std::string& path, const StlImportLimits& limits) {
     validate_limits(limits);
     const std::string bytes = read_file_bytes(path, limits.max_file_bytes);
     return parse_ascii_bytes(bytes, path, limits);
+}
+
+StlMesh parse_stl(const std::string& path, const StlImportLimits& limits) {
+    validate_limits(limits);
+    const std::string bytes = read_file_bytes(path, limits.max_file_bytes);
+    return parse_stl_bytes(bytes, path, limits);
 }
 
 }

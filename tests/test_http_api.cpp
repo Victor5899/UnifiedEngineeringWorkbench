@@ -2,6 +2,8 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -314,6 +316,69 @@ void test_oversized() {
     expect(count_files(tight_server.temp_directory()) == 0, "rejected payload is not kept");
 }
 
+void append_le_u32(std::string& out, std::uint32_t value) {
+    out.push_back(static_cast<char>(value & 0xffu));
+    out.push_back(static_cast<char>((value >> 8) & 0xffu));
+    out.push_back(static_cast<char>((value >> 16) & 0xffu));
+    out.push_back(static_cast<char>((value >> 24) & 0xffu));
+}
+
+void append_le_f32(std::string& out, float value) {
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    append_le_u32(out, bits);
+}
+
+std::string binary_triangle_stl() {
+    std::string bytes(80, '\0');
+    const std::string name = "solid wooden chair";
+    bytes.replace(0, name.size(), name);
+    append_le_u32(bytes, 1);
+    const float values[] = {0.f, 0.f, -1.f, 0.f, 0.f, 0.f, 2.f, 0.f, 0.f, 0.f, 3.f, 0.f};
+    for (float value : values) append_le_f32(bytes, value);
+    bytes.push_back('\0');
+    bytes.push_back('\0');
+    return bytes;
+}
+
+void test_binary_stl_upload(const TestServer& server) {
+    const auto response = server.call([](httplib::Client& client) {
+        return client.Post("/api/geometry/stl", {file_part("Wooden chair.stl", binary_triangle_stl())});
+    });
+    expect(static_cast<bool>(response), "binary STL upload connects");
+    if (!response) return;
+    expect(response->status == 200, "binary STL upload status");
+    if (response->status != 200) {
+        expect(false, "binary STL body: " + response->body);
+        return;
+    }
+    const auto body = nlohmann::json::parse(response->body);
+    expect(body["filename"] == "Wooden chair.stl", "binary STL filename");
+    expect(body["solid_name"] == "wooden chair", "binary STL solid name");
+    expect(body["triangle_count"] == 1, "binary STL triangle count");
+    expect(body["vertex_count"] == 3, "binary STL vertex count");
+    expect(body["triangles"].size() == 1, "binary STL triangle array");
+    expect(body["coordinate_units"] == "file", "binary STL units");
+    expect_near(body["triangles"][0]["normal"][2], -1.0, "binary STL normal z");
+    expect_near(body["triangles"][0]["vertices"][1][0], 2.0, "binary STL vertex x");
+    expect_near(body["bounding_box"]["max"][1], 3.0, "binary STL max y");
+    expect_near(body["dimensions"]["x"], 2.0, "binary STL dimension x");
+
+    std::string truncated = binary_triangle_stl();
+    truncated.push_back('\0');
+    truncated[80] = 2;
+    const auto rejected = server.call([&](httplib::Client& client) {
+        return client.Post("/api/geometry/stl", {file_part("truncated.stl", truncated)});
+    });
+    expect(static_cast<bool>(rejected) && rejected->status == 400, "truncated binary STL status");
+    if (rejected && rejected->status == 400) {
+        const auto error = nlohmann::json::parse(rejected->body);
+        const std::string message = error["error"];
+        expect(message.find("truncated") != std::string::npos, "truncated binary STL message");
+        expect(message.find("api_secret_temp") == std::string::npos, "truncated binary STL hides temp path");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -326,6 +391,7 @@ int main() {
         TestServer server(config);
         test_health_and_missing_route(server);
         test_valid_stl(server);
+        test_binary_stl_upload(server);
         test_valid_temperature(server);
         test_invalid_and_missing(server);
         test_oversized();

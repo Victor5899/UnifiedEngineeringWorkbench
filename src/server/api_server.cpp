@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -86,6 +87,13 @@ void send_json(httplib::Response& response, int status, const nlohmann::json& bo
     apply_cors(response);
 }
 
+void send_json_text(httplib::Response& response, int status, std::string body) {
+    response.status = status;
+    response.set_content(std::move(body), "application/json");
+    response.set_header("Cache-Control", "no-store");
+    apply_cors(response);
+}
+
 void send_error(httplib::Response& response, int status, const std::string& message) {
     send_json(response, status, {{"error", message}});
 }
@@ -109,32 +117,93 @@ nlohmann::json dimensions_json(const workbench::BoundingBox& bounds) {
     };
 }
 
-nlohmann::json geometry_json(const workbench::StlMesh& mesh, const std::string& filename) {
-    nlohmann::json triangles = nlohmann::json::array();
-    auto& triangle_array = triangles.get_ref<nlohmann::json::array_t&>();
-    triangle_array.reserve(mesh.triangles.size());
-    for (const workbench::Triangle& triangle : mesh.triangles) {
-        nlohmann::json record = {
-            {"normal", vec3_json(triangle.normal)},
-            {"vertices",
-             nlohmann::json::array({
-                 vec3_json(triangle.vertices[0]),
-                 vec3_json(triangle.vertices[1]),
-                 vec3_json(triangle.vertices[2]),
-             })},
-        };
-        triangle_array.push_back(std::move(record));
+// One binary record is 50 bytes. The JSON contract writes every coordinate as
+// text, and a DOM of nested arrays would be several times larger again. The
+// geometry response is one pre-sized string. Above this budget the upload is
+// refused after a successful parse, before that string is allocated.
+constexpr std::size_t kGeometryJsonBudgetBytes = 384ull * 1024ull * 1024ull;
+constexpr std::size_t kGeometryJsonBytesPerTriangle = 448;
+
+void append_json_number(std::string& out, double value) {
+    char buffer[64];
+    const auto result = std::to_chars(
+        buffer,
+        buffer + sizeof(buffer),
+        value,
+        std::chars_format::general,
+        std::numeric_limits<double>::max_digits10);
+    if (result.ec != std::errc{}) {
+        throw ApiRequestError(500, "The server could not encode a geometry coordinate.");
     }
-    return {
-        {"filename", filename},
-        {"solid_name", mesh.solid_name},
-        {"triangle_count", mesh.triangle_count()},
-        {"vertex_count", mesh.vertex_count()},
-        {"triangles", std::move(triangles)},
-        {"bounding_box", bounds_json(mesh.bounds)},
-        {"dimensions", dimensions_json(mesh.bounds)},
-        {"coordinate_units", "file"},
-    };
+    out.append(buffer, static_cast<std::size_t>(result.ptr - buffer));
+}
+
+void append_json_vec3(std::string& out, const workbench::Vec3& value) {
+    out.push_back('[');
+    append_json_number(out, value.x);
+    out.push_back(',');
+    append_json_number(out, value.y);
+    out.push_back(',');
+    append_json_number(out, value.z);
+    out.push_back(']');
+}
+
+std::string geometry_json_text(const workbench::StlMesh& mesh, const std::string& filename) {
+    const std::size_t count = mesh.triangle_count();
+    const std::size_t max_triangles = kGeometryJsonBudgetBytes / kGeometryJsonBytesPerTriangle;
+    if (count > max_triangles) {
+        const auto estimated_mib =
+            (static_cast<unsigned long long>(count) * kGeometryJsonBytesPerTriangle) / (1024ull * 1024ull);
+        throw ApiRequestError(
+            413,
+            "This STL contains " + std::to_string(count) +
+                " triangles. The JSON viewer response would be about " +
+                std::to_string(estimated_mib) + " MiB, above the " +
+                std::to_string(kGeometryJsonBudgetBytes / (1024ull * 1024ull)) +
+                " MiB response budget. The file is within the upload limit, but expanding every triangle into JSON uses much more memory than the STL. Decimate the mesh to " +
+                std::to_string(max_triangles) + " triangles or fewer and try again.");
+    }
+
+    std::string out;
+    const std::size_t per_triangle = 160;
+    if (count > (std::numeric_limits<std::size_t>::max() - 1024) / per_triangle) {
+        throw ApiRequestError(413, "This STL is too large to encode as a JSON response.");
+    }
+    out.reserve(1024 + count * per_triangle);
+    out += "{\"filename\":";
+    out += nlohmann::json(filename).dump();
+    out += ",\"solid_name\":";
+    out += nlohmann::json(mesh.solid_name).dump();
+    out += ",\"triangle_count\":";
+    out += std::to_string(count);
+    out += ",\"vertex_count\":";
+    out += std::to_string(mesh.vertex_count());
+    out += ",\"triangles\":[";
+    for (std::size_t index = 0; index < count; ++index) {
+        if (index != 0) out.push_back(',');
+        const workbench::Triangle& triangle = mesh.triangles[index];
+        out += "{\"normal\":";
+        append_json_vec3(out, triangle.normal);
+        out += ",\"vertices\":[";
+        append_json_vec3(out, triangle.vertices[0]);
+        out.push_back(',');
+        append_json_vec3(out, triangle.vertices[1]);
+        out.push_back(',');
+        append_json_vec3(out, triangle.vertices[2]);
+        out += "]}";
+    }
+    out += "],\"bounding_box\":{\"min\":";
+    append_json_vec3(out, mesh.bounds.min);
+    out += ",\"max\":";
+    append_json_vec3(out, mesh.bounds.max);
+    out += "},\"dimensions\":{\"x\":";
+    append_json_number(out, mesh.bounds.dimension_x());
+    out += ",\"y\":";
+    append_json_number(out, mesh.bounds.dimension_y());
+    out += ",\"z\":";
+    append_json_number(out, mesh.bounds.dimension_z());
+    out += "},\"coordinate_units\":\"file\"}";
+    return out;
 }
 
 nlohmann::json temperature_json(const workbench::TemperatureDataset& dataset,
@@ -223,14 +292,14 @@ void log_result(const char* route, int status) {
     std::cout << "POST " << route << ' ' << status << '\n';
 }
 
-template <typename Parse, typename ToJson>
+template <typename Parse, typename Publish>
 void handle_upload(const httplib::Request& request,
                    httplib::Response& response,
                    const workbench::ApiServerConfig& config,
                    const char* route,
                    const char* extension,
                    Parse parse,
-                   ToJson to_json) {
+                   Publish publish) {
     const std::string content_type = request.get_header_value("Content-Type");
     const bool multipart = content_type.find("multipart/form-data") != std::string::npos;
     if (!multipart || !request.has_file("file")) {
@@ -265,9 +334,8 @@ void handle_upload(const httplib::Request& request,
         ScopedTempFile temp = ScopedTempFile::create(config.temp_directory, extension);
         temp.write(file.content);
         stored_path = temp.path();
-        const auto parsed = parse(stored_path.string());
-        send_json(response, 200, to_json(parsed, display_name));
-        log_result(route, 200);
+        publish(response, parse(stored_path.string()), display_name);
+        log_result(route, response.status);
     } catch (const workbench::StlParseError& error) {
         send_error(response, 400, public_error(error.what(), stored_path, display_name));
         log_result(route, 400);
@@ -374,10 +442,10 @@ void configure_api_server(httplib::Server& server, const ApiServerConfig& config
             [active](const std::string& path) {
                 StlImportLimits limits;
                 limits.max_file_bytes = active.max_upload_bytes;
-                return parse_ascii_stl(path, limits);
+                return parse_stl(path, limits);
             },
-            [](const StlMesh& mesh, const std::string& filename) {
-                return geometry_json(mesh, filename);
+            [](httplib::Response& response, const StlMesh& mesh, const std::string& filename) {
+                send_json_text(response, 200, geometry_json_text(mesh, filename));
             });
     });
 
@@ -393,8 +461,8 @@ void configure_api_server(httplib::Server& server, const ApiServerConfig& config
                 limits.max_file_bytes = active.max_upload_bytes;
                 return parse_temperature_csv(path, limits);
             },
-            [](const TemperatureDataset& dataset, const std::string& filename) {
-                return temperature_json(dataset, filename);
+            [](httplib::Response& response, const TemperatureDataset& dataset, const std::string& filename) {
+                send_json(response, 200, temperature_json(dataset, filename));
             });
     });
 

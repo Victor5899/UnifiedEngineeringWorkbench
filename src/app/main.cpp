@@ -14,9 +14,9 @@ void print_vec3(const workbench::Vec3& value) {
 }
 
 void inspect_stl(const std::string& path) {
-    const workbench::StlMesh mesh = workbench::parse_ascii_stl(path);
+    const workbench::StlMesh mesh = workbench::parse_stl(path);
     std::cout << std::setprecision(10);
-    std::cout << "ASCII STL inspection\n"
+    std::cout << "STL inspection\n"
               << "File: " << path << '\n'
               << "Solid: " << (mesh.solid_name.empty() ? "(unnamed)" : mesh.solid_name) << '\n'
               << "Triangles: " << mesh.triangle_count() << '\n'

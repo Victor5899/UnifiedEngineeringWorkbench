@@ -32,8 +32,8 @@ export function AboutPage({
           <article className="rounded-md border border-ink-600 bg-ink-900 p-4">
             <h3 className="text-sm font-semibold text-mist-100">Geometry</h3>
             <p className="mt-2 text-sm leading-6 text-mist-300">
-              ASCII STL is posted to <span className="mono text-mist-100">/api/geometry/stl</span>. The viewer
-              draws the returned triangles with their face normals.
+              ASCII and binary STL are posted to <span className="mono text-mist-100">/api/geometry/stl</span>. The
+              viewer draws the returned triangles with their face normals.
             </p>
           </article>
           <article className="rounded-md border border-ink-600 bg-ink-900 p-4">

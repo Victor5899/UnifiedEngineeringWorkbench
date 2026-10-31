@@ -2,10 +2,13 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -315,6 +318,150 @@ void test_limits() {
     expect(missing, "missing file was not rejected");
 }
 
+void append_le_u32(std::string& out, std::uint32_t value) {
+    out.push_back(static_cast<char>(value & 0xffu));
+    out.push_back(static_cast<char>((value >> 8) & 0xffu));
+    out.push_back(static_cast<char>((value >> 16) & 0xffu));
+    out.push_back(static_cast<char>((value >> 24) & 0xffu));
+}
+
+void append_le_f32(std::string& out, float value) {
+    static_assert(sizeof(float) == 4, "binary STL tests require a 32-bit float");
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    append_le_u32(out, bits);
+}
+
+void append_vec3(std::string& out, float x, float y, float z) {
+    append_le_f32(out, x);
+    append_le_f32(out, y);
+    append_le_f32(out, z);
+}
+
+std::string binary_header(const std::string& text) {
+    std::string header(80, '\0');
+    const std::size_t count = std::min(text.size(), header.size());
+    header.replace(0, count, text.substr(0, count));
+    return header;
+}
+
+void append_triangle(std::string& out,
+                      float nx, float ny, float nz,
+                      float ax, float ay, float az,
+                      float bx, float by, float bz,
+                      float cx, float cy, float cz) {
+    append_vec3(out, nx, ny, nz);
+    append_vec3(out, ax, ay, az);
+    append_vec3(out, bx, by, bz);
+    append_vec3(out, cx, cy, cz);
+    out.push_back('\0');
+    out.push_back('\0');
+}
+
+std::string binary_stl(const std::string& header_text, std::uint32_t declared_count, const std::string& records) {
+    std::string bytes = binary_header(header_text);
+    append_le_u32(bytes, declared_count);
+    bytes += records;
+    return bytes;
+}
+
+std::string one_triangle_record() {
+    std::string record;
+    append_triangle(record, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f, 0.0f, 2.0f, 0.0f, 0.0f, 0.0f, 3.0f, 0.0f);
+    return record;
+}
+
+void expect_parse_stl_error(const std::string& label, const std::string& bytes, const std::string& needle) {
+    TempFile file(bytes, ".stl");
+    try {
+        workbench::parse_stl(file.path());
+        expect(false, label + " did not throw");
+    } catch (const workbench::StlParseError& error) {
+        const std::string message = error.what();
+        if (message.find(needle) == std::string::npos) {
+            expect(false, label + " message '" + message + "' does not contain '" + needle + "'");
+        }
+    } catch (const std::exception& error) {
+        expect(false, label + " threw unexpected exception: " + error.what());
+    }
+}
+
+void test_binary_stl() {
+    const std::string chair = binary_stl("solid wooden chair", 1, one_triangle_record());
+    {
+        TempFile file(chair, ".stl");
+        const workbench::StlMesh mesh = workbench::parse_stl(file.path());
+        expect(mesh.solid_name == "wooden chair", "binary solid name ignores the solid keyword");
+        expect(mesh.triangle_count() == 1, "binary triangle count");
+        expect(mesh.vertex_count() == 3, "binary vertex count");
+        expect_near(mesh.triangles[0].normal.z, -1.0, "binary normal z");
+        expect_near(mesh.triangles[0].vertices[1].x, 2.0, "binary second vertex x");
+        expect_near(mesh.triangles[0].vertices[2].y, 3.0, "binary third vertex y");
+        expect_near(mesh.bounds.min.x, 0.0, "binary min x");
+        expect_near(mesh.bounds.max.x, 2.0, "binary max x");
+        expect_near(mesh.bounds.max.y, 3.0, "binary max y");
+        expect_near(mesh.bounds.dimension_x(), 2.0, "binary dimension x");
+        expect_near(mesh.bounds.dimension_z(), 0.0, "binary dimension z");
+    }
+    expect_stl_error("ascii entry rejects solid-header binary", chair, "binary STL");
+
+    std::string second;
+    append_triangle(second, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f);
+    const std::string two = binary_stl("block", 2, one_triangle_record() + second);
+    {
+        TempFile file(two, ".stl");
+        const workbench::StlMesh mesh = workbench::parse_stl(file.path());
+        expect(mesh.solid_name == "block", "binary header without solid keyword");
+        expect(mesh.triangle_count() == 2, "two binary triangles");
+        expect_near(mesh.bounds.min.z, 0.0, "binary bounds include the second triangle");
+        expect_near(mesh.bounds.max.z, 1.0, "binary max z");
+    }
+
+    const auto sample = std::filesystem::path(WORKBENCH_SOURCE_DIR) / "data" / "geometry" / "sample_geometry.stl";
+    const workbench::StlMesh ascii = workbench::parse_stl(sample.string());
+    expect(ascii.solid_name == "rectangular_block", "parse_stl keeps the ASCII sample");
+    expect(ascii.triangle_count() == 12, "parse_stl sample triangle count");
+    expect(ascii.vertex_count() == 36, "parse_stl sample vertex count");
+
+    expect_parse_stl_error("empty file", "", "empty");
+    expect_parse_stl_error("zero triangles", binary_stl("", 0, ""), "no triangles");
+    expect_parse_stl_error("truncated header", std::string(20, '\0'), "truncated");
+    expect_parse_stl_error(
+        "truncated records",
+        binary_stl("solid cut", 2, one_triangle_record()),
+        "truncated");
+    expect_parse_stl_error(
+        "trailing bytes",
+        binary_stl("solid extra", 1, one_triangle_record() + std::string("X")),
+        "does not match");
+
+    {
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        std::string record;
+        append_triangle(record, 0.0f, 0.0f, 1.0f, nan, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f);
+        expect_parse_stl_error("non-finite vertex", binary_stl("bad", 1, record), "non-finite");
+    }
+    {
+        const float inf = std::numeric_limits<float>::infinity();
+        std::string record;
+        append_triangle(record, inf, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f);
+        expect_parse_stl_error("non-finite normal", binary_stl("bad", 1, record), "non-finite");
+    }
+
+    workbench::StlImportLimits one;
+    one.max_triangles = 1;
+    TempFile limited(two, ".stl");
+    try {
+        workbench::parse_stl(limited.path(), one);
+        expect(false, "binary triangle limit was not enforced");
+    } catch (const workbench::StlParseError& error) {
+        expect(std::string(error.what()).find("exceeds the limit of 1") != std::string::npos,
+               std::string("binary triangle limit message: ") + error.what());
+    } catch (const std::exception& error) {
+        expect(false, std::string("binary triangle limit threw: ") + error.what());
+    }
+}
+
 void test_temporary_file_is_removed() {
     std::string stored;
     {
@@ -343,6 +490,7 @@ int main() {
         test_sample_geometry();
         test_rejections();
         test_binary_is_rejected();
+        test_binary_stl();
         test_limits();
         test_temporary_file_is_removed();
     } catch (const std::exception& error) {

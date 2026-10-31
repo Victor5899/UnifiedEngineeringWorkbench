@@ -45,4 +45,10 @@ public:
 // Invalid limits throw std::invalid_argument. File and syntax failures throw StlParseError.
 StlMesh parse_ascii_stl(const std::string& path, const StlImportLimits& limits = {});
 
+// Reads one ASCII or binary STL solid. A file whose size is exactly
+// 84 + triangle_count * 50 bytes is binary, including when its 80-byte header
+// begins with "solid". Text that starts with "solid" and contains facet
+// structure stays on the ASCII parser. Limits and errors match parse_ascii_stl.
+StlMesh parse_stl(const std::string& path, const StlImportLimits& limits = {});
+
 }
