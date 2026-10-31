@@ -1,0 +1,40 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #090c10;
+  color: #e7eef6;
+  font-family: "Segoe UI", "SF Pro Text", system-ui, sans-serif;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.mono {
+  font-family: "SFMono-Regular", "Cascadia Mono", Consolas, ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center gap-2 rounded-md border border-ink-600 bg-ink-800 px-3 py-1.5 text-sm text-mist-100 transition hover:border-mist-500 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .btn-primary {
+    @apply border-accent/50 bg-accent/15 text-accent hover:border-accent hover:bg-accent/25;
+  }
+}

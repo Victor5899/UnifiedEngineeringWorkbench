@@ -10,11 +10,12 @@ Initial implementation scaffold for the PASS Science Works common assignment.
 - [x] Initial positive/negative/convergence tests
 - [x] ASCII STL import
 - [x] Nodal temperature CSV import
-- [ ] STL and temperature visualization
+- [x] Local HTTP API over the C++ importers
+- [x] STL and temperature visualization
 - [ ] Serial/parallel batch benchmark
 - [ ] Embedded mock adapters
 - [ ] Backpropagation implementation
-- [ ] Frontend and Windows standalone packaging
+- [ ] Windows 11 x64 `Launch.exe` packaging
 
 ## Build on macOS
 
@@ -50,6 +51,79 @@ Inspect a geometry file or a nodal temperature table:
 ```
 
 `inspect-stl` and `inspect-temperature` take exactly one file path. Any other first argument is still the thermal element count, so the original solver command is unchanged.
+
+## Workbench UI
+
+The viewer is a React application. It does not parse STL or CSV itself. It uploads the file to `workbench_server`, which calls the existing C++ importers and returns JSON.
+
+Prerequisites:
+
+- CMake 3.16 or newer, and a C++17 compiler
+- Node.js 18 or newer
+- Network access the first time CMake configures the API, so it can fetch cpp-httplib v0.18.3 and nlohmann/json v3.11.3. Later builds use the CMake download cache. The running API does not need network access.
+- Python is not required.
+
+Build the C++ backend and tests:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+```
+
+On Visual Studio, the server executable is `build\Release\workbench_server.exe` (or `build\Debug\...` for a Debug build). With Makefiles or Ninja it is `build/workbench_server`.
+
+Start the API. It binds to `127.0.0.1:8080` unless you change the host or port:
+
+```bash
+./build/workbench_server
+```
+
+```text
+workbench_server --host 127.0.0.1 --port 8080
+```
+
+Install and start the frontend from `frontend/`:
+
+```bash
+npm install
+npm run dev
+```
+
+Open `http://127.0.0.1:5173`. Vite proxies `/api` to `http://127.0.0.1:8080`. Override that with `WORKBENCH_API_ORIGIN` when the API is on another port.
+
+Production frontend build:
+
+```bash
+npm run build
+npm run preview
+```
+
+`npm run preview` serves `frontend/dist` on `http://127.0.0.1:4173` and uses the same API proxy. The C++ server can also serve that directory:
+
+```bash
+./build/workbench_server --static frontend/dist
+```
+
+Direct dependency versions are pinned in `frontend/package.json`. `frontend/package-lock.json` records the full tree.
+
+### HTTP API
+
+| Method | Path | Body |
+| --- | --- | --- |
+| GET | `/api/health` | none |
+| POST | `/api/geometry/stl` | `multipart/form-data` field `file` |
+| POST | `/api/thermal/csv` | `multipart/form-data` field `file` |
+
+The upload limit defaults to 64 MiB, matching the importer limits. The client-supplied filename is a display label only. The server stores the bytes under a generated name in a temporary directory and deletes that file before the response is returned.
+
+A successful STL response contains `filename`, `solid_name`, `triangle_count`, `vertex_count`, `triangles` (`normal` and `vertices` as `[x, y, z]`), `bounding_box.min`, `bounding_box.max`, `dimensions`, and `coordinate_units` (`file`).
+
+A successful temperature response contains `filename`, `node_count`, `nodes` (`node_id`, `x_m`, `y_m`, `z_m`, `temperature_C`), `minimum_temperature_C`, `maximum_temperature_C`, `average_temperature_C`, `bounding_box`, `dimensions`, `coordinate_units` (`m`), and `temperature_units` (`C`).
+
+Failures return JSON `{ "error": "..." }` with status 400 for a rejected file, 413 for an oversized upload, and 500 for an unexpected server failure. Parser messages do not include the temporary path.
+
+Geometry and Thermal Analysis are implemented. Performance and Hardware are labelled placeholders for later phases. The point cloud is not registered to the STL.
 
 ## ASCII STL import
 
@@ -134,7 +208,7 @@ Numeric text is interpreted in the C locale. The program does not change the pro
 ## Known limitations
 
 - Binary STL, multi-body STL, and vertex welding are not implemented.
-- There is no mesh-to-result registration and no visualization in this phase.
+- There is no mesh-to-result registration. The viewers draw the STL and the temperature table separately.
 - The temperature table is a simplified nodal CSV, not a full ANSYS result database.
 - The sample temperature field is synthetic. It is not a solution of the heat equation and it is not output from the 1D thermal solver.
 - STL coordinates have whatever unit the author used. Only the sample block is defined to be in metres.
@@ -146,4 +220,13 @@ The governing equation is `-d/dx(kA dT/dx) = qA`. For a linear two-node element 
 The end temperatures are imposed as essential (Dirichlet) boundary conditions.
 
 ## Platform note
-Development is initially on macOS. The required Windows 11 x64 `Launch.exe` must be built and tested on Windows (for example, using a Windows GitHub Actions runner or a Windows machine). A macOS executable is not a substitute for that deliverable.
+Development can be done on macOS or Windows. The API and frontend use portable C++17, Node, and a localhost HTTP boundary. They do not call macOS-only frameworks.
+
+The required Windows 11 x64 `Launch.exe` is not produced or verified here. Remaining packaging work, on a Windows 11 x64 machine or a Windows CI runner:
+
+1. Configure with MSVC x64 (Visual Studio 2022 or Ninja) and build `workbench_server.exe` plus the existing tests.
+2. Build the frontend with `npm run build`.
+3. Package a `Launch.exe` that starts `workbench_server.exe --host 127.0.0.1 --port 8080 --static <frontend dist>` and opens the UI. `--static` already serves the built frontend.
+4. Run the C++ tests and both viewers on Windows before treating that package as verified.
+
+A macOS `workbench_server` binary is not a substitute for `Launch.exe`.
