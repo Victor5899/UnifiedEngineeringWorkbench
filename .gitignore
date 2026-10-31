@@ -1,0 +1,6 @@
+build/
+.DS_Store
+*.csv
+*.exe
+*.dll
+*.pdb
