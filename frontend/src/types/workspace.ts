@@ -1,4 +1,4 @@
-export type ModuleId = "geometry" | "thermal" | "performance" | "hardware" | "about";
+export type ModuleId = "geometry" | "thermal" | "performance" | "hardware" | "backprop" | "about";
 
 export type StatusPhase = "idle" | "working" | "success" | "error";
 

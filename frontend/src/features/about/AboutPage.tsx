@@ -28,7 +28,8 @@ export function AboutPage({
           Geometry and temperature files are parsed by the C++17 engines. This interface uploads the file and
           draws the JSON result. It does not reimplement the STL or CSV parsers. The Performance page runs
           serial and parallel batches of the same 1D thermal solver on the C++ backend. The Hardware page talks to
-          in-process mock adapters. It does not open a USB, serial, or JTAG port.
+          in-process mock adapters. It does not open a USB, serial, or JTAG port. The Backpropagation page reads one
+          fixed sample from the C++ engine and does not recompute its gradients.
         </p>
         <div className="mt-6 grid max-w-3xl gap-3 md:grid-cols-2">
           <article className="rounded-md border border-ink-600 bg-ink-900 p-4">
@@ -57,6 +58,14 @@ export function AboutPage({
             <p className="mt-2 text-sm leading-6 text-mist-300">
               Device cards call <span className="mono text-mist-100">/api/hardware/devices</span>. Connection and
               telemetry stay inside the C++ process. No physical board is attached.
+            </p>
+          </article>
+          <article className="rounded-md border border-ink-600 bg-ink-900 p-4">
+            <h3 className="text-sm font-semibold text-mist-100">Backpropagation</h3>
+            <p className="mt-2 text-sm leading-6 text-mist-300">
+              One sample and one hidden neuron are returned by{" "}
+              <span className="mono text-mist-100">/api/learning/backpropagation</span>. The loss curve is the C++
+              training history.
             </p>
           </article>
           <article className="rounded-md border border-ink-600 bg-ink-900 p-4">

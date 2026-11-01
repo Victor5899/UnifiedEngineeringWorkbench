@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import { AppShell } from "./components/layout/AppShell";
 import { AboutPage } from "./features/about/AboutPage";
+import { BackpropPage } from "./features/backprop/BackpropPage";
 import { GeometryPage } from "./features/geometry/GeometryPage";
 import { HardwarePage } from "./features/hardware/HardwarePage";
 import { PerformancePage } from "./features/performance/PerformancePage";
@@ -31,6 +32,7 @@ export function App() {
         <ThermalPage active={module === "thermal"} />
         <PerformancePage active={module === "performance"} />
         <HardwarePage active={module === "hardware"} />
+        <BackpropPage active={module === "backprop"} />
         <AboutPage active={module === "about"} connection={health.connection} version={health.version} />
       </AppShell>
     </WorkspaceDispatchProvider>

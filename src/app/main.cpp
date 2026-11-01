@@ -1,4 +1,5 @@
 #include "workbench/geometry/stl_parser.hpp"
+#include "workbench/learning/backpropagation.hpp"
 #include "workbench/performance/benchmark_runner.hpp"
 #include "workbench/thermal/temperature_csv_parser.hpp"
 #include "workbench/thermal_solver.hpp"
@@ -9,6 +10,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <locale>
 #include <optional>
 #include <string>
 #include <vector>
@@ -170,6 +172,105 @@ int run_benchmark_command(int argc, char** argv) {
     return result.numerical_validation_passed ? 0 : 1;
 }
 
+void print_backprop_report(std::ostream& out, const workbench::BackpropExperiment& experiment) {
+    const auto previous_flags = out.flags();
+    const auto previous_precision = out.precision();
+    const auto previous_locale = out.getloc();
+    out.imbue(std::locale::classic());
+    out << std::defaultfloat << std::setprecision(8);
+
+    const workbench::BackpropForward& forward = experiment.initial_forward;
+    out << "Backpropagation\n"
+        << "Model: one training sample, one hidden neuron\n"
+        << "Activation: tanh\n"
+        << "Loss: 0.5*(y_hat-y)^2\n"
+        << "Input x: " << experiment.sample.x << '\n'
+        << "Target y: " << experiment.sample.y << '\n'
+        << "Learning rate: " << experiment.learning_rate << '\n'
+        << "Finite-difference epsilon: " << experiment.epsilon << '\n'
+        << "Gradient tolerance: " << experiment.gradient_tolerance << '\n';
+    out << std::setprecision(17);
+    out << "\nInitial parameters\n"
+        << "w = " << experiment.initial_parameters.w << '\n'
+        << "b = " << experiment.initial_parameters.b << '\n'
+        << "v = " << experiment.initial_parameters.v << '\n'
+        << "c = " << experiment.initial_parameters.c << '\n'
+        << "\nInitial forward pass\n"
+        << "z = " << forward.z << '\n'
+        << "h = " << forward.h << '\n'
+        << "y_hat = " << forward.y_hat << '\n'
+        << "error = " << forward.error << '\n'
+        << "loss = " << forward.loss << '\n'
+        << "\nAnalytical gradients\n"
+        << "dJ/dw = " << experiment.analytical.dJ_dw << '\n'
+        << "dJ/db = " << experiment.analytical.dJ_db << '\n'
+        << "dJ/dv = " << experiment.analytical.dJ_dv << '\n'
+        << "dJ/dc = " << experiment.analytical.dJ_dc << '\n'
+        << "\nNumerical gradient verification\n";
+    out << std::left << std::setw(14) << "Parameter"
+        << std::setw(28) << "Analytical gradient"
+        << std::setw(28) << "Numerical gradient"
+        << std::setw(28) << "Absolute error"
+        << "Result\n";
+    for (const workbench::BackpropGradientCheck& check : experiment.checks) {
+        out << std::left << std::setw(14) << workbench::backprop_parameter_name(check.parameter)
+            << std::setw(28) << check.analytical
+            << std::setw(28) << check.numerical
+            << std::setw(28) << check.absolute_error
+            << (check.passed ? "PASS" : "FAIL") << '\n';
+    }
+    out << "Gradient verification: " << (experiment.gradient_check_passed ? "passed" : "failed") << '\n'
+        << "\nFirst simultaneous update\n"
+        << "w = " << experiment.after_one_update.w << '\n'
+        << "b = " << experiment.after_one_update.b << '\n'
+        << "v = " << experiment.after_one_update.v << '\n'
+        << "c = " << experiment.after_one_update.c << '\n'
+        << "\nTraining\n"
+        << "Steps: " << experiment.training_steps << '\n'
+        << "History rows: " << experiment.history.size() << '\n';
+    if (!experiment.history.empty()) {
+        out << "Initial loss: " << experiment.history.front().loss << '\n'
+            << "Final loss: " << experiment.history.back().loss << '\n'
+            << "Final parameters\n"
+            << "w = " << experiment.history.back().parameters.w << '\n'
+            << "b = " << experiment.history.back().parameters.b << '\n'
+            << "v = " << experiment.history.back().parameters.v << '\n'
+            << "c = " << experiment.history.back().parameters.c << '\n';
+    }
+
+    out.flags(previous_flags);
+    out.precision(previous_precision);
+    out.imbue(previous_locale);
+}
+
+int run_backprop_command(int argc, char** argv) {
+    std::string output = "results/backpropagation_training.csv";
+    for (int index = 2; index < argc; ++index) {
+        const std::string argument = argv[index];
+        if (argument == "--output") {
+            if (index + 1 >= argc) {
+                throw std::invalid_argument(
+                    "--output needs a value.\nUsage: workbench backprop [--output results/backpropagation_training.csv]");
+            }
+            output = argv[++index];
+        } else {
+            throw std::invalid_argument(
+                "Unknown backprop argument: " + argument +
+                "\nUsage: workbench backprop [--output results/backpropagation_training.csv]");
+        }
+    }
+
+    const workbench::BackpropExperiment experiment = workbench::run_backpropagation();
+    print_backprop_report(std::cout, experiment);
+    workbench::write_backprop_history_csv(experiment.history, output);
+    std::cout << "CSV written to: " << output << '\n';
+    if (!experiment.gradient_check_passed) {
+        std::cerr << "Gradient verification failed.\n";
+        return 1;
+    }
+    return 0;
+}
+
 void inspect_temperature(const std::string& path) {
     const workbench::TemperatureDataset dataset = workbench::parse_temperature_csv(path);
     std::cout << std::setprecision(10);
@@ -192,6 +293,7 @@ int main(int argc, char** argv) {
         if (argc > 1) {
             const std::string command = argv[1];
             if (command == "benchmark") return run_benchmark_command(argc, argv);
+            if (command == "backprop") return run_backprop_command(argc, argv);
             if (command == "inspect-stl") {
                 if (argc != 3) {
                     std::cerr << "Usage: workbench inspect-stl <file.stl>\n";

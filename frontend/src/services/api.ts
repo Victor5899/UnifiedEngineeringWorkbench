@@ -1,3 +1,4 @@
+import type { BackpropReport } from "../types/backpropagation";
 import type { GeometryModel, HealthResponse, TemperatureModel } from "../types/api";
 import type {
   CapabilityList,
@@ -377,6 +378,76 @@ export function fetchEmbeddedTelemetry(deviceId: string): Promise<TelemetryRepor
 
 export function armSimulatedHardwareFailure(deviceId: string, failure: string): Promise<SimulatedFailureArmed> {
   return postJson("/api/hardware/simulate-failure", { device_id: deviceId, failure }, isFailureArmed);
+}
+
+const backpropParameters = ["w", "b", "v", "c"] as const;
+
+function isBackpropParameters(value: unknown): value is BackpropReport["initial_parameters"] {
+  return isRecord(value) && backpropParameters.every((name) => isFiniteNumber(value[name]));
+}
+
+function isBackpropReport(value: unknown): value is BackpropReport {
+  if (!isRecord(value)) return false;
+  if (value.training_samples !== 1 || value.hidden_neurons !== 1 || value.activation !== "tanh") return false;
+  if (typeof value.loss_definition !== "string") return false;
+  if (!isRecord(value.sample) || !isFiniteNumber(value.sample.x) || !isFiniteNumber(value.sample.y)) return false;
+  if (!isFiniteNumber(value.learning_rate) || !isFiniteNumber(value.epsilon) || !isFiniteNumber(value.gradient_tolerance)) {
+    return false;
+  }
+  if (value.training_steps !== 100) return false;
+  if (!isBackpropParameters(value.initial_parameters) || !isBackpropParameters(value.parameters_after_one_update)) {
+    return false;
+  }
+  if (!isBackpropParameters(value.final_parameters)) return false;
+  const forward = value.initial_forward;
+  if (!isRecord(forward) || !["z", "h", "y_hat", "error", "loss"].every((name) => isFiniteNumber(forward[name]))) {
+    return false;
+  }
+  const gradients = value.analytical_gradients;
+  if (!isRecord(gradients) || !["dJ_dw", "dJ_db", "dJ_dv", "dJ_dc"].every((name) => isFiniteNumber(gradients[name]))) {
+    return false;
+  }
+  if (!Array.isArray(value.gradient_checks) || value.gradient_checks.length !== 4) return false;
+  const checksPass = value.gradient_checks.every((check, index) => {
+    if (!isRecord(check) || typeof check.passed !== "boolean") return false;
+    return (
+      check.parameter === backpropParameters[index] &&
+      isFiniteNumber(check.analytical_gradient) &&
+      isFiniteNumber(check.numerical_gradient) &&
+      isFiniteNumber(check.absolute_error) &&
+      check.absolute_error >= 0
+    );
+  });
+  if (!checksPass || typeof value.gradient_check_passed !== "boolean") return false;
+  const everyRowPassed = value.gradient_checks.every((check) => isRecord(check) && check.passed === true);
+  if (value.gradient_check_passed !== everyRowPassed) return false;
+  if (!isFiniteNumber(value.initial_loss) || !isFiniteNumber(value.final_loss)) return false;
+  if (!Array.isArray(value.history) || value.history.length !== 101) return false;
+  return value.history.every((row, index) => {
+    if (!isRecord(row) || row.step !== index || !isFiniteNumber(row.loss)) return false;
+    return backpropParameters.every((name) => isFiniteNumber(row[name]));
+  });
+}
+
+export function fetchBackpropagation(): Promise<BackpropReport> {
+  return requestJson("/api/learning/backpropagation", undefined, isBackpropReport);
+}
+
+export async function downloadBackpropCsv(): Promise<{ filename: string; csv: string }> {
+  let response: Response;
+  try {
+    response = await fetch("/api/learning/backpropagation/csv", { cache: "no-store" });
+  } catch {
+    throw new ApiError("Could not reach the backend. Start workbench_server and try again.", 0);
+  }
+  if (!response.ok) throw new ApiError(await errorMessage(response), response.status);
+  const csv = await response.text();
+  if (!csv.startsWith("step,loss,w,b,v,c")) {
+    throw new ApiError("The export did not contain a backpropagation table.", response.status);
+  }
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const match = /filename="([^"]+)"/.exec(disposition);
+  return { filename: match?.[1] ?? "backpropagation_training.csv", csv };
 }
 
 export async function downloadBenchmarkCsv(): Promise<{ filename: string; csv: string }> {

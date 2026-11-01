@@ -1,4 +1,4 @@
-import { Box, Cpu, Gauge, Info, Thermometer, type LucideIcon } from "lucide-react";
+import { Box, Cpu, Gauge, Info, Sigma, Thermometer, type LucideIcon } from "lucide-react";
 import type { ModuleId } from "../types/workspace";
 
 export interface ModuleDefinition {
@@ -36,6 +36,13 @@ export const modules: readonly ModuleDefinition[] = [
     label: "Hardware",
     description: "Simulated device adapters",
     icon: Cpu,
+    implemented: true,
+  },
+  {
+    id: "backprop",
+    label: "Backpropagation",
+    description: "Single-sample gradient check",
+    icon: Sigma,
     implemented: true,
   },
   {

@@ -1,6 +1,7 @@
 #include "workbench/server/api_server.hpp"
 
 #include "hardware_api.hpp"
+#include "learning_api.hpp"
 #include "performance_api.hpp"
 #include "workbench/geometry/stl_parser.hpp"
 #include "workbench/thermal/temperature_csv_parser.hpp"
@@ -453,6 +454,7 @@ void configure_api_server(httplib::Server& server, const ApiServerConfig& config
 
     register_performance_routes(server);
     register_hardware_routes(server);
+    register_learning_routes(server);
 
     server.Post(R"(/api/thermal/csv)", [active](const httplib::Request& request, httplib::Response& response) {
         handle_upload(

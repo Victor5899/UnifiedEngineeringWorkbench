@@ -14,7 +14,7 @@ Initial implementation scaffold for the PASS Science Works common assignment.
 - [x] STL and temperature visualization
 - [x] Serial/parallel batch benchmark
 - [x] Embedded mock adapters
-- [ ] Backpropagation implementation
+- [x] Backpropagation implementation
 - [ ] Windows 11 x64 `Launch.exe` packaging
 
 ## Build on macOS
@@ -61,7 +61,7 @@ Prerequisites:
 - CMake 3.16 or newer, and a C++17 compiler
 - Node.js 18 or newer
 - Network access the first time CMake configures the API, so it can fetch cpp-httplib v0.18.3 and nlohmann/json v3.11.3. Later builds use the CMake download cache. The running API does not need network access.
-- Python is not required.
+- Python is not required to build, test, or run the workbench. Matplotlib is used only to redraw the backpropagation loss figure from the C++ CSV.
 
 Build the C++ backend and tests:
 
@@ -126,6 +126,8 @@ Direct dependency versions are pinned in `frontend/package.json`. `frontend/pack
 | POST | `/api/hardware/disconnect` | JSON `device_id` |
 | GET | `/api/hardware/telemetry` | query `device_id` |
 | POST | `/api/hardware/simulate-failure` | JSON `device_id` and `failure` |
+| GET | `/api/learning/backpropagation` | none |
+| GET | `/api/learning/backpropagation/csv` | none |
 
 The upload limit defaults to 64 MiB, matching the importer limits. The client-supplied filename is a display label only. The server stores the bytes under a generated name in a temporary directory and deletes that file before the response is returned.
 
@@ -149,6 +151,13 @@ Run the same benchmark from the command line:
 
 ```bash
 ./build/workbench benchmark --seed 42 --batch 8 --mesh 128 --repetitions 5 --workers 1,2,3,4 --output benchmark.csv
+```
+
+Run the single-sample backpropagation experiment. It writes the training history and returns a non-zero status if the gradient check fails:
+
+```bash
+./build/workbench backprop --output results/backpropagation_training.csv
+python3 scripts/plot_backpropagation_loss.py
 ```
 
 ## ASCII STL import
@@ -306,6 +315,12 @@ The result records the CPU brand string, physical core count, logical CPU count,
 
 `benchmark_result_csv` writes one row per measured repetition. Warm-up solves do not add rows. Columns include the benchmark id, seed, batch size, mesh size, execution mode, worker count, repetition index, that repetition's time, the median, speedup, efficiency, maximum absolute error, validation, generation time, the aggregate warm-up time, that configuration's excluded warm-up time, total duration, and the hardware fields. The header row uses those names. The same table is returned by `GET /api/performance/export`.
 
+## Backpropagation
+
+The network has one training sample, `x = 1`, `y = 2`, and one tanh hidden neuron. Forward evaluation, the analytical derivatives, the central-difference check, and the 100 gradient steps are calculated in C++. The derivation, the measured gradient table, and the commands that regenerate the loss figure are in `docs/backpropagation.md`.
+
+`GET /api/learning/backpropagation` returns that experiment as JSON. `GET /api/learning/backpropagation/csv` returns the same history as `text/csv`. The browser page draws those values. It does not differentiate the network again.
+
 ## Known limitations
 
 - Multi-body STL and vertex welding are not implemented. Binary files with extra bytes after the last triangle are rejected.
@@ -322,6 +337,7 @@ The result records the CPU brand string, physical core count, logical CPU count,
 - Logical CPU count, physical cores, RAM, or the CPU model can be unavailable in restricted environments. The worker limit is then 1 when the logical count is unknown.
 - The worker pool never uses more than four threads, even when the machine has more logical CPUs.
 - Hardware adapters are simulated. They do not detect USB devices, program an FPGA, or drive a JTAG scan. Telemetry values are labelled constants, not measurements. See `docs/embedded_integration.md`.
+- Backpropagation trains one sample through one hidden neuron. It is not a general network trainer, and the loss curve is not a multi-sample validation result. See `docs/backpropagation.md`.
 
 ## Engineering notes
 The governing equation is `-d/dx(kA dT/dx) = qA`. For a linear two-node element of length `h`, the element stiffness is

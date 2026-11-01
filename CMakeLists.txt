@@ -46,6 +46,7 @@ add_library(workbench_core
     src/core/hardware/mock_fpga_adapter.cpp
     src/core/hardware/mock_jtag_adapter.cpp
     src/core/hardware/device_manager.cpp
+    src/core/learning/backpropagation.cpp
 )
 target_include_directories(workbench_core PUBLIC include "${WORKBENCH_GENERATED_DIR}")
 target_link_libraries(workbench_core PUBLIC Threads::Threads)
@@ -81,6 +82,12 @@ add_executable(workbench_hardware_tests tests/test_hardware.cpp)
 target_link_libraries(workbench_hardware_tests PRIVATE workbench_core)
 add_test(NAME hardware_tests COMMAND workbench_hardware_tests)
 
+add_executable(workbench_backprop_tests tests/test_backpropagation.cpp)
+target_link_libraries(workbench_backprop_tests PRIVATE workbench_core)
+target_compile_definitions(workbench_backprop_tests PRIVATE
+    WORKBENCH_TEST_DIR="${CMAKE_BINARY_DIR}/tmp_tests")
+add_test(NAME backprop_tests COMMAND workbench_backprop_tests)
+
 add_test(NAME thermal_cli
     COMMAND workbench 4 ${CMAKE_BINARY_DIR}/thermal_cli_smoke.csv)
 set_tests_properties(thermal_cli PROPERTIES
@@ -100,6 +107,11 @@ add_test(NAME benchmark_cli
     COMMAND workbench benchmark --seed 1 --batch 2 --mesh 4 --repetitions 1 --workers 1)
 set_tests_properties(benchmark_cli PROPERTIES
     PASS_REGULAR_EXPRESSION "Numerical validation: passed")
+
+add_test(NAME backprop_cli
+    COMMAND workbench backprop --output ${CMAKE_BINARY_DIR}/backpropagation_training.csv)
+set_tests_properties(backprop_cli PROPERTIES
+    PASS_REGULAR_EXPRESSION "Gradient verification: passed")
 
 # Local HTTP API. The CLI executable above is unchanged.
 # cpp-httplib v0.18.3 and nlohmann/json v3.11.3 are fetched on the first configure.
@@ -134,6 +146,7 @@ if(WORKBENCH_BUILD_SERVER)
         src/server/api_server.cpp
         src/server/performance_api.cpp
         src/server/hardware_api.cpp
+        src/server/learning_api.cpp
     )
     target_include_directories(workbench_server_lib PUBLIC include)
     target_compile_definitions(workbench_server_lib
@@ -166,17 +179,22 @@ if(WORKBENCH_BUILD_SERVER)
     add_executable(workbench_hardware_api_tests tests/test_hardware_api.cpp)
     target_link_libraries(workbench_hardware_api_tests PRIVATE workbench_server_lib)
     add_test(NAME hardware_api_tests COMMAND workbench_hardware_api_tests)
+
+    add_executable(workbench_backprop_api_tests tests/test_backpropagation_api.cpp)
+    target_link_libraries(workbench_backprop_api_tests PRIVATE workbench_server_lib)
+    add_test(NAME backprop_api_tests COMMAND workbench_backprop_api_tests)
 endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     foreach(target workbench_core workbench workbench_tests
             workbench_geometry_tests workbench_temperature_tests workbench_performance_tests
-            workbench_hardware_tests)
+            workbench_hardware_tests workbench_backprop_tests)
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
     endforeach()
     if(TARGET workbench_server_lib)
         foreach(target workbench_server_lib workbench_server workbench_api_tests
-                workbench_performance_api_tests workbench_hardware_api_tests)
+                workbench_performance_api_tests workbench_hardware_api_tests
+                workbench_backprop_api_tests)
             target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
         endforeach()
     endif()
